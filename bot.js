@@ -2,8 +2,8 @@
 const http = require('http');
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
+const { processStoryImage } = require('./imageProcessor');
 
-// Mini servidor HTTP para manter o Render Web Service ativo no plano Free
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -53,46 +53,64 @@ bot.on('photo', async (ctx) => {
   }
 
   try {
+    await ctx.reply('🎨 Aplicando identidade visual Samba Raiou...');
+
     const photoArray = ctx.message.photo;
     const highResPhoto = photoArray[photoArray.length - 1];
     const fileUrl = await ctx.telegram.getFileLink(highResPhoto.file_id);
-    const caption = ctx.message.caption || '';
+
+    // 1. Download do buffer da imagem
+    const response = await axios.get(fileUrl.href, { responseType: 'arraybuffer' });
+    const rawBuffer = Buffer.from(response.data);
+
+    // 2. Processamento automático de branding e proporção 9:16
+    const brandedBuffer = await processStoryImage(rawBuffer);
+
+    // 3. Devolve a prévia tratada para aprovação do usuário
+    const previewMessage = await ctx.replyWithPhoto(
+      { source: brandedBuffer },
+      {
+        caption: `🥁 *Prévia com Identidade Visual Aplicada*\n\nProporção 9:16 ajustada e marca d'água inserida.\nDeseja publicar no *@sambaraiou*?`,
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('📲 Publicar no STORY', 'publish_story'),
+            Markup.button.callback('📰 Publicar no FEED', 'publish_feed')
+          ],
+          [Markup.button.callback('❌ Descartar', 'cancel_post')]
+        ])
+      }
+    );
+
+    // Captura o link gerado pelo Telegram para a imagem com branding
+    const processedPhotoArray = previewMessage.photo;
+    const processedHighRes = processedPhotoArray[processedPhotoArray.length - 1];
+    const processedFileLink = await ctx.telegram.getFileLink(processedHighRes.file_id);
 
     pendingAction = {
-      imageUrl: fileUrl.href,
-      caption: caption
+      imageUrl: processedFileLink.href,
+      caption: ctx.message.caption || ''
     };
 
-    await ctx.replyWithPhoto(highResPhoto.file_id, {
-      caption: `📸 *Imagem recebida!*\n\nOnde deseja publicar no *@sambaraiou*?`,
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('📲 Publicar no STORY', 'publish_story'),
-          Markup.button.callback('📰 Publicar no FEED', 'publish_feed')
-        ],
-        [Markup.button.callback('❌ Descartar', 'cancel_post')]
-      ])
-    });
   } catch (error) {
-    console.error('Erro ao processar imagem:', error);
-    ctx.reply('❌ Falha ao processar a imagem do Telegram.');
+    console.error('Erro no processamento da imagem:', error);
+    ctx.reply('❌ Falha ao aplicar identidade visual na imagem.');
   }
 });
 
 bot.action('publish_story', async (ctx) => {
   if (!pendingAction) return ctx.reply('⚠️ Nenhuma publicação pendente.');
 
-  await ctx.editMessageCaption('⏳ Enviando Story para o Instagram do @sambaraiou...');
+  await ctx.editMessageCaption('⏳ Enviando Story com branding para o Instagram...');
 
   try {
     const postId = await publishToInstagram(pendingAction.imageUrl, 'STORIES');
-    await ctx.reply(`✅ *Story publicado com sucesso!*\nID da mídia: \`${postId}\``, { parse_mode: 'Markdown' });
+    await ctx.reply(`✅ *Story publicado!*\nID da mídia: \`${postId}\``, { parse_mode: 'Markdown' });
     pendingAction = null;
   } catch (error) {
     console.error(error.response?.data || error.message);
     const detail = error.response?.data?.error?.message || error.message;
-    await ctx.reply(`❌ Erro da Meta ao publicar Story: ${detail}`);
+    await ctx.reply(`❌ Erro da Meta: ${detail}`);
   }
 });
 
@@ -103,12 +121,12 @@ bot.action('publish_feed', async (ctx) => {
 
   try {
     const postId = await publishToInstagram(pendingAction.imageUrl, 'FEED', pendingAction.caption);
-    await ctx.reply(`✅ *Post no Feed publicado!*\nID da mídia: \`${postId}\``, { parse_mode: 'Markdown' });
+    await ctx.reply(`✅ *Post publicado no Feed!*\nID da mídia: \`${postId}\``, { parse_mode: 'Markdown' });
     pendingAction = null;
   } catch (error) {
     console.error(error.response?.data || error.message);
     const detail = error.response?.data?.error?.message || error.message;
-    await ctx.reply(`❌ Erro da Meta ao publicar no Feed: ${detail}`);
+    await ctx.reply(`❌ Erro da Meta: ${detail}`);
   }
 });
 
@@ -118,7 +136,7 @@ bot.action('cancel_post', async (ctx) => {
 });
 
 bot.launch().then(() => {
-  console.log('🚀 Samba Raiou Bot atualizado! Envie fotos pelo celular no Telegram.');
+  console.log('🚀 Samba Raiou Bot pronto com Sharp e Branding!');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
