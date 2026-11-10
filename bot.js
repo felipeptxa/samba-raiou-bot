@@ -4,18 +4,31 @@ const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const { processStoryImage } = require('./imageProcessor');
 
+// Armazena a última imagem processada em memória para entrega direta à Meta
+let latestProcessedBuffer = null;
+
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
+  if (req.url === '/media/story.jpg' && latestProcessedBuffer) {
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Content-Length': latestProcessedBuffer.length,
+      'Cache-Control': 'no-cache'
+    });
+    return res.end(latestProcessedBuffer);
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Samba Raiou Bot online!\n');
 }).listen(PORT, () => {
-  console.log(`Servidor HTTP ouvindo na porta ${PORT}`);
+  console.log(`Servidor HTTP ativo na porta ${PORT}`);
 });
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const ADMIN_CHAT_ID = String(process.env.TELEGRAM_CHAT_ID);
 const IG_USER_ID = process.env.IG_USER_ID;
 const IG_ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL; // Variável nativa do Render
 
 let pendingAction = null;
 
@@ -53,24 +66,24 @@ bot.on('photo', async (ctx) => {
   }
 
   try {
-    await ctx.reply('🎨 Aplicando identidade visual Samba Raiou...');
+    await ctx.reply('🎨 Processando imagem com fidelidade máxima...');
 
     const photoArray = ctx.message.photo;
     const highResPhoto = photoArray[photoArray.length - 1];
     const fileUrl = await ctx.telegram.getFileLink(highResPhoto.file_id);
 
-    // 1. Download do buffer da imagem
+    // Baixa o original enviado
     const response = await axios.get(fileUrl.href, { responseType: 'arraybuffer' });
     const rawBuffer = Buffer.from(response.data);
 
-    // 2. Processamento automático de branding e proporção 9:16
-    const brandedBuffer = await processStoryImage(rawBuffer);
+    // Processa com Sharp (Safe zone calibrada e sem distorção)
+    latestProcessedBuffer = await processStoryImage(rawBuffer);
 
-    // 3. Devolve a prévia tratada para aprovação do usuário
-    const previewMessage = await ctx.replyWithPhoto(
-      { source: brandedBuffer },
+    // Envia prévia no Telegram (apenas visualização humana)
+    await ctx.replyWithPhoto(
+      { source: latestProcessedBuffer },
       {
-        caption: `🥁 *Prévia com Identidade Visual Aplicada*\n\nProporção 9:16 ajustada e marca d'água inserida.\nDeseja publicar no *@sambaraiou*?`,
+        caption: `🥁 *Prévia Calibrada*\n\nLogo alinhada à Safe Zone e nitidez preservada.\nDeseja publicar?`,
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
           [
@@ -82,31 +95,32 @@ bot.on('photo', async (ctx) => {
       }
     );
 
-    // Captura o link gerado pelo Telegram para a imagem com branding
-    const processedPhotoArray = previewMessage.photo;
-    const processedHighRes = processedPhotoArray[processedPhotoArray.length - 1];
-    const processedFileLink = await ctx.telegram.getFileLink(processedHighRes.file_id);
+    // Determina a URL direta de alta resolução para a Meta baixar
+    const publicUrl = RENDER_EXTERNAL_URL 
+      ? `${RENDER_EXTERNAL_URL}/media/story.jpg`
+      : (await ctx.telegram.getFileLink(highResPhoto.file_id)).href;
 
     pendingAction = {
-      imageUrl: processedFileLink.href,
+      imageUrl: publicUrl,
       caption: ctx.message.caption || ''
     };
 
   } catch (error) {
     console.error('Erro no processamento da imagem:', error);
-    ctx.reply('❌ Falha ao aplicar identidade visual na imagem.');
+    ctx.reply('❌ Falha ao processar imagem.');
   }
 });
 
 bot.action('publish_story', async (ctx) => {
   if (!pendingAction) return ctx.reply('⚠️ Nenhuma publicação pendente.');
 
-  await ctx.editMessageCaption('⏳ Enviando Story com branding para o Instagram...');
+  await ctx.editMessageCaption('⏳ Publicando Story em alta resolução no Instagram...');
 
   try {
     const postId = await publishToInstagram(pendingAction.imageUrl, 'STORIES');
     await ctx.reply(`✅ *Story publicado!*\nID da mídia: \`${postId}\``, { parse_mode: 'Markdown' });
     pendingAction = null;
+    latestProcessedBuffer = null;
   } catch (error) {
     console.error(error.response?.data || error.message);
     const detail = error.response?.data?.error?.message || error.message;
@@ -117,12 +131,13 @@ bot.action('publish_story', async (ctx) => {
 bot.action('publish_feed', async (ctx) => {
   if (!pendingAction) return ctx.reply('⚠️ Nenhuma publicação pendente.');
 
-  await ctx.editMessageCaption('⏳ Publicando no Feed do @sambaraiou...');
+  await ctx.editMessageCaption('⏳ Publicando no Feed...');
 
   try {
     const postId = await publishToInstagram(pendingAction.imageUrl, 'FEED', pendingAction.caption);
     await ctx.reply(`✅ *Post publicado no Feed!*\nID da mídia: \`${postId}\``, { parse_mode: 'Markdown' });
     pendingAction = null;
+    latestProcessedBuffer = null;
   } catch (error) {
     console.error(error.response?.data || error.message);
     const detail = error.response?.data?.error?.message || error.message;
@@ -132,11 +147,12 @@ bot.action('publish_feed', async (ctx) => {
 
 bot.action('cancel_post', async (ctx) => {
   pendingAction = null;
+  latestProcessedBuffer = null;
   await ctx.editMessageCaption('🚫 Publicação descartada.');
 });
 
 bot.launch().then(() => {
-  console.log('🚀 Samba Raiou Bot pronto com Sharp e Branding!');
+  console.log('🚀 Bot operacional com pipeline de alta fidelidade!');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
